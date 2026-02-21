@@ -1,5 +1,7 @@
 import express from 'express';
 import pg from 'pg';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const { Pool } = pg;
 const app = express();
@@ -8,6 +10,22 @@ const port = process.env.PORT || 8787;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://localhost/mimir_control'
 });
+
+const execFileAsync = promisify(execFile);
+
+async function ensureSchema(client) {
+  await client.query(`create schema if not exists mimir`);
+  await client.query(`
+    create table if not exists mimir.dashboard_github_stats (
+      id bigserial primary key,
+      fetched_at timestamptz not null default now(),
+      open_prs int,
+      prs_with_failing_checks int,
+      release_queued_items int,
+      raw jsonb
+    )
+  `);
+}
 
 app.get('/', async (_req, res) => {
   res.type('html').send(`<!doctype html>
@@ -48,6 +66,14 @@ app.get('/', async (_req, res) => {
   </section>
 
   <section class="card">
+    <h2>GitHub</h2>
+    <div class="row"><div>Open PRs</div><div id="gh_prs">…</div></div>
+    <div class="row"><div>PRs w/ failing checks</div><div id="gh_fail">…</div></div>
+    <div class="row"><div>release:queued</div><div id="gh_rel">…</div></div>
+    <div class="muted" id="gh_meta"></div>
+  </section>
+
+  <section class="card">
     <h2>Kontrollplan</h2>
     <div class="row"><div>DB</div><div class="pill"><span class="dot" style="background:var(--ok)"></span><code>mimir_control</code></div></div>
     <div class="row"><div>Schema</div><div class="pill"><code>mimir</code></div></div>
@@ -68,6 +94,16 @@ app.get('/', async (_req, res) => {
     const j = await r.json();
     document.getElementById('mr').textContent = j.morningRoutine || '—';
     document.getElementById('dr').textContent = j.dashboardDaily || '—';
+
+    if (j.github) {
+      document.getElementById('gh_prs').textContent = String(j.github.open_prs ?? '—');
+      document.getElementById('gh_fail').textContent = String(j.github.prs_with_failing_checks ?? '—');
+      document.getElementById('gh_rel').textContent = String(j.github.release_queued_items ?? '—');
+      document.getElementById('gh_meta').textContent = 'Sist oppdatert: ' + new Date(j.github.fetched_at).toLocaleString('no-NO');
+    }
+
+    // Nudge-refresh github stats (cached ~60s server-side)
+    fetch('/api/github').catch(()=>{});
   }
   load().catch(()=>{});
   setInterval(load, 5000);
@@ -79,18 +115,82 @@ app.get('/', async (_req, res) => {
 app.get('/api/status', async (_req, res) => {
   const client = await pool.connect();
   try {
+    await ensureSchema(client);
+
     const mr = await client.query(
       `select started_at, status from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
     );
     const dr = await client.query(
       `select started_at, status from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
     );
+    const gh = await client.query(
+      `select fetched_at, open_prs, prs_with_failing_checks, release_queued_items from mimir.dashboard_github_stats order by fetched_at desc limit 1`
+    );
 
     const fmt = (row) => row ? `${new Date(row.started_at).toLocaleString('no-NO')} · ${row.status}` : null;
 
     res.json({
       morningRoutine: mr.rows[0] ? fmt(mr.rows[0]) : null,
-      dashboardDaily: dr.rows[0] ? fmt(dr.rows[0]) : null
+      dashboardDaily: dr.rows[0] ? fmt(dr.rows[0]) : null,
+      github: gh.rows[0] || null
+    });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/github', async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const cached = await client.query(
+      `select * from mimir.dashboard_github_stats order by fetched_at desc limit 1`
+    );
+
+    if (cached.rows[0]) {
+      const ageMs = Date.now() - new Date(cached.rows[0].fetched_at).getTime();
+      if (ageMs < 60_000) return res.json({ source: 'cache', ...cached.rows[0] });
+    }
+
+    // Fetch fresh via gh CLI. If gh isn't authenticated, return cached row (if any) and a warning.
+    const repo = process.env.GITHUB_REPO || 'henrbren/ai-ops';
+
+    const prList = await execFileAsync('gh', ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', 'number,statusCheckRollup'], { timeout: 5000 });
+    const prs = JSON.parse(prList.stdout || '[]');
+
+    const openPRs = prs.length;
+    const prsWithFailingChecks = prs.filter(pr => {
+      const rollup = pr.statusCheckRollup || [];
+      return rollup.some(c => {
+        const conclusion = (c.conclusion || '').toUpperCase();
+        if (!conclusion) return false; // pending/unknown ≠ failing
+        return !['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(conclusion);
+      });
+    }).length;
+
+    const relList = await execFileAsync('gh', ['issue', 'list', '--repo', repo, '--state', 'open', '--label', 'release:queued', '--limit', '200', '--json', 'number'], { timeout: 5000 });
+    const relItems = JSON.parse(relList.stdout || '[]');
+    const releaseQueuedItems = relItems.length;
+
+    const raw = { repo, openPRs, prsWithFailingChecks, releaseQueuedItems };
+
+    const ins = await client.query(
+      `insert into mimir.dashboard_github_stats(open_prs, prs_with_failing_checks, release_queued_items, raw)
+       values ($1,$2,$3,$4)
+       returning *`,
+      [openPRs, prsWithFailingChecks, releaseQueuedItems, raw]
+    );
+
+    res.json({ source: 'fresh', ...ins.rows[0] });
+  } catch (e) {
+    const cached = await client.query(
+      `select * from mimir.dashboard_github_stats order by fetched_at desc limit 1`
+    );
+    res.status(200).json({
+      source: 'error',
+      error: String(e?.message || e),
+      cached: cached.rows[0] || null
     });
   } finally {
     client.release();
