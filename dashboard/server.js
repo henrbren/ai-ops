@@ -49,6 +49,13 @@ app.get('/', async (_req, res) => {
     a{color:#c4b5fd;text-decoration:none}
     a:hover{text-decoration:underline}
     code{color:#cbd5e1}
+    .runs{display:flex;flex-direction:column;gap:8px}
+    .run{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .run .left{display:flex;flex-direction:column;gap:2px}
+    .badge{font-size:12px;border:1px solid #243041;background:#0f1522;border-radius:999px;padding:2px 8px;color:#cbd5e1;white-space:nowrap}
+    .badge.ok{border-color:rgba(34,197,94,.4);color:var(--ok)}
+    .badge.warn{border-color:rgba(245,158,11,.4);color:var(--warn)}
+    .badge.fail{border-color:rgba(239,68,68,.4);color:var(--bad)}
   </style>
 </head>
 <body>
@@ -63,6 +70,12 @@ app.get('/', async (_req, res) => {
     <div class="row"><div>Siste dashboard build</div><div id="dr">…</div></div>
     <div class="row"><div>LAFT store batch</div><div class="pill"><span class="dot" style="background:var(--accent)"></span>Tor 15:00</div></div>
     <div class="row"><a href="https://github.com/henrbren/ai-ops/issues/2" target="_blank">Rapporter (issue #2)</a><span></span></div>
+  </section>
+
+  <section class="card" id="runs_card">
+    <h2>Runs</h2>
+    <div class="muted" style="margin:-4px 0 10px 0">Siste kjøringer fra <code>mimir.runs</code></div>
+    <div id="runs" class="muted">Laster…</div>
   </section>
 
   <section class="card">
@@ -89,6 +102,38 @@ app.get('/', async (_req, res) => {
 </main>
 <script>
   document.getElementById('now').textContent = new Date().toLocaleString('no-NO');
+  function esc(s){
+    return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  }
+
+  async function loadRuns(){
+    const r = await fetch('/api/runs?limit=12');
+    const j = await r.json();
+    const el = document.getElementById('runs');
+    if (!Array.isArray(j?.runs) || j.runs.length === 0) {
+      el.textContent = 'Ingen runs ennå.';
+      return;
+    }
+
+    el.classList.remove('muted');
+    el.classList.add('runs');
+
+    el.innerHTML = j.runs.map(run => {
+      const when = new Date(run.started_at).toLocaleString('no-NO');
+      const badge = '<span class="badge ' + esc(run.status) + '">' + esc(run.status) + '</span>';
+      const summary = run.summary ? '<div class="muted">' + esc(run.summary) + '</div>' : '';
+      return (
+        '<div class="run">' +
+          '<div class="left">' +
+            '<div><code>' + esc(run.kind) + '</code> · <span class="muted">' + esc(when) + '</span></div>' +
+            summary +
+          '</div>' +
+          '<div>' + badge + '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
   async function load(){
     const r = await fetch('/api/status');
     const j = await r.json();
@@ -101,6 +146,8 @@ app.get('/', async (_req, res) => {
       document.getElementById('gh_rel').textContent = String(j.github.release_queued_items ?? '—');
       document.getElementById('gh_meta').textContent = 'Sist oppdatert: ' + new Date(j.github.fetched_at).toLocaleString('no-NO');
     }
+
+    loadRuns().catch(()=>{});
 
     // Nudge-refresh github stats (cached ~60s server-side)
     fetch('/api/github').catch(()=>{});
@@ -134,6 +181,32 @@ app.get('/api/status', async (_req, res) => {
       dashboardDaily: dr.rows[0] ? fmt(dr.rows[0]) : null,
       github: gh.rows[0] || null
     });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/runs', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const kind = req.query.kind ? String(req.query.kind) : null;
+    const limitRaw = req.query.limit ? Number(req.query.limit) : 20;
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 100) : 20;
+
+    const q = kind
+      ? {
+          text: `select id, kind, status, started_at, finished_at, summary from mimir.runs where kind=$1 order by started_at desc limit $2`,
+          values: [kind, limit]
+        }
+      : {
+          text: `select id, kind, status, started_at, finished_at, summary from mimir.runs order by started_at desc limit $1`,
+          values: [limit]
+        };
+
+    const r = await client.query(q);
+    res.json({ runs: r.rows });
   } finally {
     client.release();
   }
