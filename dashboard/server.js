@@ -15,6 +15,21 @@ const execFileAsync = promisify(execFile);
 
 async function ensureSchema(client) {
   await client.query(`create schema if not exists mimir`);
+
+  // Shared run log table (used across tools)
+  await client.query(`
+    create table if not exists mimir.runs (
+      id bigserial primary key,
+      kind text not null,
+      status text not null,
+      started_at timestamptz not null default now(),
+      finished_at timestamptz,
+      summary text,
+      details jsonb
+    )
+  `);
+  await client.query(`create index if not exists runs_kind_started_at_idx on mimir.runs(kind, started_at desc)`);
+
   await client.query(`
     create table if not exists mimir.dashboard_github_stats (
       id bigserial primary key,
@@ -67,7 +82,8 @@ app.get('/', async (_req, res) => {
   <section class="card">
     <h2>Status</h2>
     <div class="row"><div>Siste morning routine</div><div id="mr">…</div></div>
-    <div class="row"><div>Siste dashboard build</div><div id="dr">…</div></div>
+    <div class="muted" id="mr_summary" style="margin-top:-2px">&nbsp;</div>
+    <div class="row" style="margin-top:10px"><div>Siste dashboard build</div><div id="dr">…</div></div>
     <div class="row"><div>LAFT store batch</div><div class="pill"><span class="dot" style="background:var(--accent)"></span>Tor 15:00</div></div>
     <div class="row"><a href="https://github.com/henrbren/ai-ops/issues/2" target="_blank">Rapporter (issue #2)</a><span></span></div>
   </section>
@@ -137,7 +153,15 @@ app.get('/', async (_req, res) => {
   async function load(){
     const r = await fetch('/api/status');
     const j = await r.json();
-    document.getElementById('mr').textContent = j.morningRoutine || '—';
+    const mrEl = document.getElementById('mr');
+    const mrSummaryEl = document.getElementById('mr_summary');
+    mrEl.textContent = j.morningRoutine || '—';
+    if (j.morningRoutineRun?.summary) {
+      mrSummaryEl.textContent = j.morningRoutineRun.summary;
+    } else {
+      mrSummaryEl.innerHTML = '&nbsp;';
+    }
+
     document.getElementById('dr').textContent = j.dashboardDaily || '—';
 
     if (j.github) {
@@ -165,10 +189,10 @@ app.get('/api/status', async (_req, res) => {
     await ensureSchema(client);
 
     const mr = await client.query(
-      `select started_at, status from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
+      `select started_at, status, summary from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
     );
     const dr = await client.query(
-      `select started_at, status from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
+      `select started_at, status, summary from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
     );
     const gh = await client.query(
       `select fetched_at, open_prs, prs_with_failing_checks, release_queued_items from mimir.dashboard_github_stats order by fetched_at desc limit 1`
@@ -179,6 +203,8 @@ app.get('/api/status', async (_req, res) => {
     res.json({
       morningRoutine: mr.rows[0] ? fmt(mr.rows[0]) : null,
       dashboardDaily: dr.rows[0] ? fmt(dr.rows[0]) : null,
+      morningRoutineRun: mr.rows[0] || null,
+      dashboardDailyRun: dr.rows[0] || null,
       github: gh.rows[0] || null
     });
   } finally {
