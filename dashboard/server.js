@@ -40,7 +40,23 @@ async function ensureSchema(client) {
       raw jsonb
     )
   `);
+
+  // Minimal leads table (shell UI can show "none yet" until ingestion exists)
+  await client.query(`
+    create table if not exists mimir.leads (
+      id bigserial primary key,
+      created_at timestamptz not null default now(),
+      source text,
+      name text,
+      email text,
+      company text,
+      status text not null default 'new',
+      notes text
+    )
+  `);
+  await client.query(`create index if not exists leads_created_at_idx on mimir.leads(created_at desc)`);
 }
+
 
 app.get('/', async (_req, res) => {
   res.type('html').send(`<!doctype html>
@@ -102,6 +118,12 @@ app.get('/', async (_req, res) => {
     <div class="muted" id="gh_meta"></div>
   </section>
 
+  <section class="card" id="leads_card">
+    <h2>Leads</h2>
+    <div class="muted" style="margin:-4px 0 10px 0">En enkel shell rundt <code>mimir.leads</code> (ingen ingestion ennå)</div>
+    <div id="leads" class="muted">Laster…</div>
+  </section>
+
   <section class="card">
     <h2>Kontrollplan</h2>
     <div class="row"><div>DB</div><div class="pill"><span class="dot" style="background:var(--ok)"></span><code>mimir_control</code></div></div>
@@ -150,7 +172,37 @@ app.get('/', async (_req, res) => {
     }).join('');
   }
 
+  async function loadLeads(){
+    const r = await fetch('/api/leads?limit=8');
+    const j = await r.json();
+    const el = document.getElementById('leads');
+    if (!Array.isArray(j?.leads) || j.leads.length === 0) {
+      el.textContent = 'Ingen leads ennå.';
+      return;
+    }
+
+    el.classList.remove('muted');
+    el.classList.add('runs');
+
+    el.innerHTML = j.leads.map(l => {
+      const when = new Date(l.created_at).toLocaleString('no-NO');
+      const right = '<span class="badge">' + esc(l.status || '—') + '</span>';
+      const line2 = [l.company, l.email, l.source].filter(Boolean).join(' · ');
+      const sub = line2 ? '<div class="muted">' + esc(line2) + '</div>' : '';
+      return (
+        '<div class="run">' +
+          '<div class="left">' +
+            '<div>' + (l.name ? esc(l.name) : '<span class="muted">(navn mangler)</span>') + ' · <span class="muted">' + esc(when) + '</span></div>' +
+            sub +
+          '</div>' +
+          '<div>' + right + '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
   async function load(){
+
     const r = await fetch('/api/status');
     const j = await r.json();
     const mrEl = document.getElementById('mr');
@@ -172,6 +224,7 @@ app.get('/', async (_req, res) => {
     }
 
     loadRuns().catch(()=>{});
+    loadLeads().catch(()=>{});
 
     // Nudge-refresh github stats (cached ~60s server-side)
     fetch('/api/github').catch(()=>{});
@@ -233,6 +286,28 @@ app.get('/api/runs', async (req, res) => {
 
     const r = await client.query(q);
     res.json({ runs: r.rows });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/leads', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const limitRaw = req.query.limit ? Number(req.query.limit) : 20;
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 100) : 20;
+
+    const r = await client.query(
+      `select id, created_at, source, name, email, company, status, notes
+       from mimir.leads
+       order by created_at desc
+       limit $1`,
+      [limit]
+    );
+
+    res.json({ leads: r.rows });
   } finally {
     client.release();
   }
