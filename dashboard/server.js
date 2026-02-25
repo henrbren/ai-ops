@@ -74,6 +74,8 @@ app.get('/', async (_req, res) => {
     main{padding:20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;}
     .card{background:var(--card);border:1px solid #1f2937;border-radius:12px;padding:14px;}
     .card h2{font-size:13px;margin:0 0 10px 0;color:#cbd5e1;letter-spacing:.02em;text-transform:uppercase;}
+    .banner{border-radius:12px;padding:12px 14px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.08)}
+    .banner h2{margin:0 0 6px 0;color:#fecaca;font-size:13px;letter-spacing:.02em;text-transform:uppercase;}
     .row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin:6px 0;}
     .pill{border:1px solid #243041;background:#0f1522;border-radius:999px;padding:6px 10px;color:#cbd5e1;display:inline-flex;gap:8px;align-items:center}
     .dot{width:10px;height:10px;border-radius:999px;background:var(--muted)}
@@ -95,6 +97,13 @@ app.get('/', async (_req, res) => {
   <div class="muted" id="now">…</div>
 </header>
 <main>
+  <section class="banner" id="incident" style="display:none">
+    <h2>Incident</h2>
+    <div class="row"><div><strong>Morning routine feilet</strong></div><div class="badge fail">fail</div></div>
+    <div class="muted" id="incident_text" style="margin-top:6px">—</div>
+    <div class="muted" style="margin-top:8px"><a href="/api/runs?kind=morning_routine&limit=20" target="_blank">Se run-logg</a></div>
+  </section>
+
   <section class="card">
     <h2>Status</h2>
     <div class="row"><div>Siste morning routine</div><div id="mr">…</div></div>
@@ -212,6 +221,19 @@ app.get('/', async (_req, res) => {
       mrSummaryEl.textContent = j.morningRoutineRun.summary;
     } else {
       mrSummaryEl.innerHTML = '&nbsp;';
+    }
+
+    // Incident banner if latest morning routine failed
+    const incidentEl = document.getElementById('incident');
+    const incidentTextEl = document.getElementById('incident_text');
+    const mrStatus = String(j.morningRoutineRun?.status || '').toLowerCase();
+    if (mrStatus === 'fail') {
+      const when = j.morningRoutineRun?.started_at ? new Date(j.morningRoutineRun.started_at).toLocaleString('no-NO') : '';
+      const summary = j.morningRoutineRun?.summary ? j.morningRoutineRun.summary : '(ingen summary)';
+      incidentTextEl.textContent = (when ? when + ' · ' : '') + summary;
+      incidentEl.style.display = '';
+    } else {
+      incidentEl.style.display = 'none';
     }
 
     document.getElementById('dr').textContent = j.dashboardDaily || '—';
