@@ -23,13 +23,13 @@ async function ensureSchema(client) {
 }
 
 const status = process.argv[2] || 'ok';
-const summary = process.argv[3] || 'dashboard_daily: incident banner for failed morning routine';
+const summary = process.argv[3] || 'dashboard_daily: runs filter by kind';
 
 const details = {
-  feature: 'incident_banner',
+  feature: 'runs_filter_kind',
   repo: 'henrbren/ai-ops',
   component: 'dashboard',
-  notes: 'Shows top-of-page incident banner when latest morning_routine run has status=fail.'
+  notes: 'Adds /api/run-kinds endpoint and a kind filter dropdown for the Runs card.'
 };
 
 const main = async () => {

@@ -82,6 +82,7 @@ app.get('/', async (_req, res) => {
     a{color:#c4b5fd;text-decoration:none}
     a:hover{text-decoration:underline}
     code{color:#cbd5e1}
+    select{background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:6px 10px;font:inherit}
     .runs{display:flex;flex-direction:column;gap:8px}
     .run{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
     .run .left{display:flex;flex-direction:column;gap:2px}
@@ -116,6 +117,12 @@ app.get('/', async (_req, res) => {
   <section class="card" id="runs_card">
     <h2>Runs</h2>
     <div class="muted" style="margin:-4px 0 10px 0">Siste kjøringer fra <code>mimir.runs</code></div>
+    <div class="row" style="margin:-2px 0 10px 0">
+      <div class="muted">Filter</div>
+      <select id="runs_kind" aria-label="Runs filter">
+        <option value="">Alle</option>
+      </select>
+    </div>
     <div id="runs" class="muted">Laster…</div>
   </section>
 
@@ -153,12 +160,19 @@ app.get('/', async (_req, res) => {
     return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
   }
 
+  function selectedRunsKind(){
+    const sel = document.getElementById('runs_kind');
+    return sel ? String(sel.value || '') : '';
+  }
+
   async function loadRuns(){
-    const r = await fetch('/api/runs?limit=12');
+    const kind = selectedRunsKind();
+    const url = kind ? ('/api/runs?kind=' + encodeURIComponent(kind) + '&limit=12') : '/api/runs?limit=12';
+    const r = await fetch(url);
     const j = await r.json();
     const el = document.getElementById('runs');
     if (!Array.isArray(j?.runs) || j.runs.length === 0) {
-      el.textContent = 'Ingen runs ennå.';
+      el.textContent = kind ? ('Ingen runs for ' + kind + ' ennå.') : 'Ingen runs ennå.';
       return;
     }
 
@@ -210,6 +224,35 @@ app.get('/', async (_req, res) => {
     }).join('');
   }
 
+  async function loadRunKinds(){
+    const sel = document.getElementById('runs_kind');
+    if (!sel) return;
+
+    // Keep current selection, use localStorage once.
+    const saved = localStorage.getItem('runs_kind') || '';
+    if (!sel.value && saved) sel.value = saved;
+
+    const r = await fetch('/api/run-kinds');
+    const j = await r.json();
+    const kinds = Array.isArray(j?.kinds) ? j.kinds : [];
+
+    const current = sel.value;
+    const existing = new Set(Array.from(sel.querySelectorAll('option')).map(o => o.value));
+    for (const k of kinds) {
+      if (!k || existing.has(k)) continue;
+      const opt = document.createElement('option');
+      opt.value = k;
+      opt.textContent = k;
+      sel.appendChild(opt);
+    }
+    sel.value = current;
+
+    sel.onchange = () => {
+      localStorage.setItem('runs_kind', sel.value || '');
+      loadRuns().catch(()=>{});
+    };
+  }
+
   async function load(){
 
     const r = await fetch('/api/status');
@@ -245,6 +288,7 @@ app.get('/', async (_req, res) => {
       document.getElementById('gh_meta').textContent = 'Sist oppdatert: ' + new Date(j.github.fetched_at).toLocaleString('no-NO');
     }
 
+    loadRunKinds().catch(()=>{});
     loadRuns().catch(()=>{});
     loadLeads().catch(()=>{});
 
@@ -282,6 +326,17 @@ app.get('/api/status', async (_req, res) => {
       dashboardDailyRun: dr.rows[0] || null,
       github: gh.rows[0] || null
     });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/run-kinds', async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+    const r = await client.query(`select distinct kind from mimir.runs order by kind asc`);
+    res.json({ kinds: r.rows.map(x => x.kind) });
   } finally {
     client.release();
   }
