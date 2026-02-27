@@ -23,13 +23,13 @@ async function ensureSchema(client) {
 }
 
 const status = process.argv[2] || 'ok';
-const summary = process.argv[3] || 'dashboard_daily: runs filter by kind';
+const summary = process.argv[3] || 'dashboard_daily: run details modal (+ /api/run/:id)';
 
 const details = {
-  feature: 'runs_filter_kind',
+  feature: 'run_details_modal',
   repo: 'henrbren/ai-ops',
   component: 'dashboard',
-  notes: 'Adds /api/run-kinds endpoint and a kind filter dropdown for the Runs card.'
+  notes: 'Adds /api/run/:id endpoint and a click-to-open modal showing run summary/details + duration in the Runs list.'
 };
 
 const main = async () => {

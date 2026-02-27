@@ -85,7 +85,14 @@ app.get('/', async (_req, res) => {
     select{background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:6px 10px;font:inherit}
     .runs{display:flex;flex-direction:column;gap:8px}
     .run{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .run.clickable{cursor:pointer}
+    .run:hover{border-radius:10px;background:rgba(255,255,255,.03)}
     .run .left{display:flex;flex-direction:column;gap:2px}
+    .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);padding:18px;z-index:50}
+    .modal .box{width:min(900px,100%);max-height:80vh;overflow:auto;background:var(--card);border:1px solid #243041;border-radius:12px;padding:14px}
+    .modal pre{white-space:pre-wrap;word-break:break-word;background:#0f1522;border:1px solid #243041;border-radius:10px;padding:10px;color:#cbd5e1;}
+    .modal .top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px}
+    .btn{background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:6px 10px;font:inherit}
     .badge{font-size:12px;border:1px solid #243041;background:#0f1522;border-radius:999px;padding:2px 8px;color:#cbd5e1;white-space:nowrap}
     .badge.ok{border-color:rgba(34,197,94,.4);color:var(--ok)}
     .badge.warn{border-color:rgba(245,158,11,.4);color:var(--warn)}
@@ -154,6 +161,21 @@ app.get('/', async (_req, res) => {
     <div class="muted">Endre tid når du vil. Jeg setter den opp nå med 10:00 som default.</div>
   </section>
 </main>
+
+<div class="modal" id="run_modal" aria-hidden="true">
+  <div class="box">
+    <div class="top">
+      <div>
+        <div style="font-weight:600" id="run_modal_title">Run</div>
+        <div class="muted" id="run_modal_meta">—</div>
+      </div>
+      <button class="btn" id="run_modal_close" type="button">Lukk</button>
+    </div>
+    <div class="muted" id="run_modal_summary" style="margin:-2px 0 10px 0">&nbsp;</div>
+    <pre id="run_modal_details">{}</pre>
+  </div>
+</div>
+
 <script>
   document.getElementById('now').textContent = new Date().toLocaleString('no-NO');
   function esc(s){
@@ -164,6 +186,63 @@ app.get('/', async (_req, res) => {
     const sel = document.getElementById('runs_kind');
     return sel ? String(sel.value || '') : '';
   }
+
+  function fmtDurationMs(ms){
+    if (!Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return ms + 'ms';
+    const s = Math.round(ms/1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s/60);
+    const rs = s % 60;
+    return m + 'm ' + String(rs).padStart(2,'0') + 's';
+  }
+
+  function openRunModal(run){
+    const modal = document.getElementById('run_modal');
+    if (!modal) return;
+
+    const title = document.getElementById('run_modal_title');
+    const meta = document.getElementById('run_modal_meta');
+    const summary = document.getElementById('run_modal_summary');
+    const details = document.getElementById('run_modal_details');
+
+    title.textContent = (run.kind || 'run') + (run.id ? (' #' + run.id) : '');
+    const started = run.started_at ? new Date(run.started_at) : null;
+    const finished = run.finished_at ? new Date(run.finished_at) : null;
+    const dur = (started && finished) ? fmtDurationMs(finished.getTime() - started.getTime()) : '';
+
+    meta.textContent = [
+      started ? started.toLocaleString('no-NO') : null,
+      run.status ? String(run.status) : null,
+      dur ? ('duration ' + dur) : null
+    ].filter(Boolean).join(' · ');
+
+    if (run.summary) {
+      summary.textContent = run.summary;
+    } else {
+      summary.innerHTML = '&nbsp;';
+    }
+
+    try {
+      details.textContent = JSON.stringify(run.details || {}, null, 2);
+    } catch {
+      details.textContent = String(run.details || '{}');
+    }
+
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden','false');
+  }
+
+  function closeRunModal(){
+    const modal = document.getElementById('run_modal');
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden','true');
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeRunModal();
+  });
 
   async function loadRuns(){
     const kind = selectedRunsKind();
@@ -183,16 +262,31 @@ app.get('/', async (_req, res) => {
       const when = new Date(run.started_at).toLocaleString('no-NO');
       const badge = '<span class="badge ' + esc(run.status) + '">' + esc(run.status) + '</span>';
       const summary = run.summary ? '<div class="muted">' + esc(run.summary) + '</div>' : '';
+      const started = new Date(run.started_at);
+      const finished = run.finished_at ? new Date(run.finished_at) : null;
+      const dur = finished ? fmtDurationMs(finished.getTime() - started.getTime()) : '';
+      const durEl = dur ? '<div class="muted">' + esc(dur) + '</div>' : '';
       return (
-        '<div class="run">' +
+        '<div class="run clickable" data-run-id="' + esc(run.id) + '">' +
           '<div class="left">' +
             '<div><code>' + esc(run.kind) + '</code> · <span class="muted">' + esc(when) + '</span></div>' +
             summary +
           '</div>' +
-          '<div>' + badge + '</div>' +
+          '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">' + badge + durEl + '</div>' +
         '</div>'
       );
     }).join('');
+
+    // Click to view details
+    for (const row of el.querySelectorAll('[data-run-id]')) {
+      row.addEventListener('click', async () => {
+        const id = row.getAttribute('data-run-id');
+        if (!id) return;
+        const rr = await fetch('/api/run/' + encodeURIComponent(id));
+        const jj = await rr.json();
+        if (jj?.run) openRunModal(jj.run);
+      });
+    }
   }
 
   async function loadLeads(){
@@ -251,6 +345,16 @@ app.get('/', async (_req, res) => {
       localStorage.setItem('runs_kind', sel.value || '');
       loadRuns().catch(()=>{});
     };
+  }
+
+  // Modal close wiring
+  const runModal = document.getElementById('run_modal');
+  const runModalClose = document.getElementById('run_modal_close');
+  if (runModalClose) runModalClose.onclick = () => closeRunModal();
+  if (runModal) {
+    runModal.addEventListener('click', (e) => {
+      if (e.target === runModal) closeRunModal();
+    });
   }
 
   async function load(){
@@ -363,6 +467,30 @@ app.get('/api/runs', async (req, res) => {
 
     const r = await client.query(q);
     res.json({ runs: r.rows });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/run/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const idRaw = String(req.params.id || '');
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+    const r = await client.query(
+      `select id, kind, status, started_at, finished_at, summary, details
+       from mimir.runs
+       where id=$1`,
+      [id]
+    );
+
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+
+    res.json({ run: r.rows[0] });
   } finally {
     client.release();
   }
