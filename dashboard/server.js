@@ -117,6 +117,7 @@ app.get('/', async (_req, res) => {
     <div class="row"><div>Siste morning routine</div><div id="mr">…</div></div>
     <div class="muted" id="mr_summary" style="margin-top:-2px">&nbsp;</div>
     <div class="row" style="margin-top:10px"><div>Siste dashboard build</div><div id="dr">…</div></div>
+    <div class="muted" id="dr_summary" style="margin-top:-2px">&nbsp;</div>
     <div class="row"><div>LAFT store batch</div><div class="pill"><span class="dot" style="background:var(--accent)"></span>Tor 15:00</div></div>
     <div class="row"><a href="https://github.com/henrbren/ai-ops/issues/2" target="_blank">Rapporter (issue #2)</a><span></span></div>
   </section>
@@ -363,11 +364,35 @@ app.get('/', async (_req, res) => {
     const j = await r.json();
     const mrEl = document.getElementById('mr');
     const mrSummaryEl = document.getElementById('mr_summary');
+    const drSummaryEl = document.getElementById('dr_summary');
+
     mrEl.textContent = j.morningRoutine || '—';
-    if (j.morningRoutineRun?.summary) {
-      mrSummaryEl.textContent = j.morningRoutineRun.summary;
+
+    // Summary + duration (if finished_at present)
+    const mrRun = j.morningRoutineRun;
+    const mrSummary = mrRun?.summary ? String(mrRun.summary) : '';
+    const mrStarted = mrRun?.started_at ? new Date(mrRun.started_at) : null;
+    const mrFinished = mrRun?.finished_at ? new Date(mrRun.finished_at) : null;
+    const mrDur = (mrStarted && mrFinished) ? fmtDurationMs(mrFinished.getTime() - mrStarted.getTime()) : '';
+
+    if (mrSummary || mrDur) {
+      mrSummaryEl.textContent = [mrSummary || null, mrDur ? ('duration ' + mrDur) : null].filter(Boolean).join(' · ');
     } else {
       mrSummaryEl.innerHTML = '&nbsp;';
+    }
+
+    const drRun = j.dashboardDailyRun;
+    const drSummary = drRun?.summary ? String(drRun.summary) : '';
+    const drStarted = drRun?.started_at ? new Date(drRun.started_at) : null;
+    const drFinished = drRun?.finished_at ? new Date(drRun.finished_at) : null;
+    const drDur = (drStarted && drFinished) ? fmtDurationMs(drFinished.getTime() - drStarted.getTime()) : '';
+
+    if (drSummaryEl) {
+      if (drSummary || drDur) {
+        drSummaryEl.textContent = [drSummary || null, drDur ? ('duration ' + drDur) : null].filter(Boolean).join(' · ');
+      } else {
+        drSummaryEl.innerHTML = '&nbsp;';
+      }
     }
 
     // Incident banner if latest morning routine failed
@@ -412,10 +437,10 @@ app.get('/api/status', async (_req, res) => {
     await ensureSchema(client);
 
     const mr = await client.query(
-      `select started_at, status, summary from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
+      `select started_at, finished_at, status, summary from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
     );
     const dr = await client.query(
-      `select started_at, status, summary from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
+      `select started_at, finished_at, status, summary from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
     );
     const gh = await client.query(
       `select fetched_at, open_prs, prs_with_failing_checks, release_queued_items from mimir.dashboard_github_stats order by fetched_at desc limit 1`

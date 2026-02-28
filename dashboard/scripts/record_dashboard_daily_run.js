@@ -23,13 +23,13 @@ async function ensureSchema(client) {
 }
 
 const status = process.argv[2] || 'ok';
-const summary = process.argv[3] || 'dashboard_daily: run details modal (+ /api/run/:id)';
+const summary = process.argv[3] || 'dashboard_daily: show duration for latest runs in Status card';
 
 const details = {
-  feature: 'run_details_modal',
+  feature: process.argv[4] || 'status_run_duration',
   repo: 'henrbren/ai-ops',
   component: 'dashboard',
-  notes: 'Adds /api/run/:id endpoint and a click-to-open modal showing run summary/details + duration in the Runs list.'
+  notes: process.argv[5] || 'Adds duration (if finished_at exists) for latest morning_routine and dashboard_daily in the Status card.'
 };
 
 const main = async () => {
