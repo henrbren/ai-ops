@@ -370,6 +370,23 @@ app.get('/', async (_req, res) => {
 
     // Summary + duration (if finished_at present)
     const mrRun = j.morningRoutineRun;
+
+    // Make status clickable to open the full run details
+    if (mrEl) {
+      if (mrRun?.id) {
+        mrEl.style.cursor = 'pointer';
+        mrEl.title = 'Klikk for detaljer';
+        mrEl.onclick = async () => {
+          const rr = await fetch('/api/run/' + encodeURIComponent(mrRun.id));
+          const jj = await rr.json();
+          if (jj?.run) openRunModal(jj.run);
+        };
+      } else {
+        mrEl.style.cursor = '';
+        mrEl.title = '';
+        mrEl.onclick = null;
+      }
+    }
     const mrSummary = mrRun?.summary ? String(mrRun.summary) : '';
     const mrStarted = mrRun?.started_at ? new Date(mrRun.started_at) : null;
     const mrFinished = mrRun?.finished_at ? new Date(mrRun.finished_at) : null;
@@ -408,7 +425,23 @@ app.get('/', async (_req, res) => {
       incidentEl.style.display = 'none';
     }
 
-    document.getElementById('dr').textContent = j.dashboardDaily || '—';
+    const drEl = document.getElementById('dr');
+    if (drEl) {
+      drEl.textContent = j.dashboardDaily || '—';
+      if (drRun?.id) {
+        drEl.style.cursor = 'pointer';
+        drEl.title = 'Klikk for detaljer';
+        drEl.onclick = async () => {
+          const rr = await fetch('/api/run/' + encodeURIComponent(drRun.id));
+          const jj = await rr.json();
+          if (jj?.run) openRunModal(jj.run);
+        };
+      } else {
+        drEl.style.cursor = '';
+        drEl.title = '';
+        drEl.onclick = null;
+      }
+    }
 
     if (j.github) {
       document.getElementById('gh_prs').textContent = String(j.github.open_prs ?? '—');
@@ -437,10 +470,10 @@ app.get('/api/status', async (_req, res) => {
     await ensureSchema(client);
 
     const mr = await client.query(
-      `select started_at, finished_at, status, summary from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
+      `select id, started_at, finished_at, status, summary from mimir.runs where kind='morning_routine' order by started_at desc limit 1`
     );
     const dr = await client.query(
-      `select started_at, finished_at, status, summary from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
+      `select id, started_at, finished_at, status, summary from mimir.runs where kind='dashboard_daily' order by started_at desc limit 1`
     );
     const gh = await client.query(
       `select fetched_at, open_prs, prs_with_failing_checks, release_queued_items from mimir.dashboard_github_stats order by fetched_at desc limit 1`
