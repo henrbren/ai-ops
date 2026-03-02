@@ -127,9 +127,17 @@ app.get('/', async (_req, res) => {
     <div class="muted" style="margin:-4px 0 10px 0">Siste kjøringer fra <code>mimir.runs</code></div>
     <div class="row" style="margin:-2px 0 10px 0">
       <div class="muted">Filter</div>
-      <select id="runs_kind" aria-label="Runs filter">
-        <option value="">Alle</option>
-      </select>
+      <div style="display:flex; gap:8px; align-items:center">
+        <select id="runs_kind" aria-label="Runs kind filter">
+          <option value="">Alle kinds</option>
+        </select>
+        <select id="runs_status" aria-label="Runs status filter">
+          <option value="">Alle status</option>
+          <option value="ok">ok</option>
+          <option value="warn">warn</option>
+          <option value="fail">fail</option>
+        </select>
+      </div>
     </div>
     <div id="runs" class="muted">Laster…</div>
   </section>
@@ -185,6 +193,11 @@ app.get('/', async (_req, res) => {
 
   function selectedRunsKind(){
     const sel = document.getElementById('runs_kind');
+    return sel ? String(sel.value || '') : '';
+  }
+
+  function selectedRunsStatus(){
+    const sel = document.getElementById('runs_status');
     return sel ? String(sel.value || '') : '';
   }
 
@@ -247,12 +260,22 @@ app.get('/', async (_req, res) => {
 
   async function loadRuns(){
     const kind = selectedRunsKind();
-    const url = kind ? ('/api/runs?kind=' + encodeURIComponent(kind) + '&limit=12') : '/api/runs?limit=12';
-    const r = await fetch(url);
+    const status = selectedRunsStatus();
+
+    const qs = new URLSearchParams();
+    qs.set('limit','12');
+    if (kind) qs.set('kind', kind);
+    if (status) qs.set('status', status);
+
+    const r = await fetch('/api/runs?' + qs.toString());
     const j = await r.json();
     const el = document.getElementById('runs');
     if (!Array.isArray(j?.runs) || j.runs.length === 0) {
-      el.textContent = kind ? ('Ingen runs for ' + kind + ' ennå.') : 'Ingen runs ennå.';
+      if (kind || status) {
+        el.textContent = 'Ingen runs' + (kind ? (' for ' + kind) : '') + (status ? (' (' + status + ')') : '') + ' ennå.';
+      } else {
+        el.textContent = 'Ingen runs ennå.';
+      }
       return;
     }
 
@@ -321,11 +344,15 @@ app.get('/', async (_req, res) => {
 
   async function loadRunKinds(){
     const sel = document.getElementById('runs_kind');
+    const selStatus = document.getElementById('runs_status');
     if (!sel) return;
 
     // Keep current selection, use localStorage once.
     const saved = localStorage.getItem('runs_kind') || '';
     if (!sel.value && saved) sel.value = saved;
+
+    const savedStatus = localStorage.getItem('runs_status') || '';
+    if (selStatus && !selStatus.value && savedStatus) selStatus.value = savedStatus;
 
     const r = await fetch('/api/run-kinds');
     const j = await r.json();
@@ -346,6 +373,13 @@ app.get('/', async (_req, res) => {
       localStorage.setItem('runs_kind', sel.value || '');
       loadRuns().catch(()=>{});
     };
+
+    if (selStatus) {
+      selStatus.onchange = () => {
+        localStorage.setItem('runs_status', selStatus.value || '');
+        loadRuns().catch(()=>{});
+      };
+    }
   }
 
   // Modal close wiring
@@ -510,18 +544,37 @@ app.get('/api/runs', async (req, res) => {
     await ensureSchema(client);
 
     const kind = req.query.kind ? String(req.query.kind) : null;
+    const statusRaw = req.query.status ? String(req.query.status).toLowerCase() : null;
+    const status = statusRaw && ['ok','warn','fail'].includes(statusRaw) ? statusRaw : null;
+
     const limitRaw = req.query.limit ? Number(req.query.limit) : 20;
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 100) : 20;
 
-    const q = kind
-      ? {
-          text: `select id, kind, status, started_at, finished_at, summary from mimir.runs where kind=$1 order by started_at desc limit $2`,
-          values: [kind, limit]
-        }
-      : {
-          text: `select id, kind, status, started_at, finished_at, summary from mimir.runs order by started_at desc limit $1`,
-          values: [limit]
-        };
+    // Build query with optional filters (kind/status)
+    const where = [];
+    const values = [];
+
+    if (kind) {
+      values.push(kind);
+      where.push(`kind=$${values.length}`);
+    }
+
+    if (status) {
+      values.push(status);
+      where.push(`status=$${values.length}`);
+    }
+
+    values.push(limit);
+    const limitParam = `$${values.length}`;
+
+    const q = {
+      text: `select id, kind, status, started_at, finished_at, summary
+            from mimir.runs
+            ${where.length ? ('where ' + where.join(' and ')) : ''}
+            order by started_at desc
+            limit ${limitParam}`,
+      values
+    };
 
     const r = await client.query(q);
     res.json({ runs: r.rows });

@@ -23,13 +23,13 @@ async function ensureSchema(client) {
 }
 
 const status = process.argv[2] || 'ok';
-const summary = process.argv[3] || 'dashboard_daily: show duration for latest runs in Status card';
+const summary = process.argv[3] || 'dashboard_daily: add status filter to Runs list';
 
 const details = {
-  feature: process.argv[4] || 'status_run_duration',
+  feature: process.argv[4] || 'runs_status_filter',
   repo: 'henrbren/ai-ops',
   component: 'dashboard',
-  notes: process.argv[5] || 'Adds duration (if finished_at exists) for latest morning_routine and dashboard_daily in the Status card.'
+  notes: process.argv[5] || 'Adds a Runs status filter (ok/warn/fail) persisted in localStorage, and extends /api/runs to support status=.'
 };
 
 const main = async () => {
