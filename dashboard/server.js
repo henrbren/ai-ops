@@ -7,6 +7,8 @@ const { Pool } = pg;
 const app = express();
 const port = process.env.PORT || 8787;
 
+app.use(express.json({ limit: '50kb' }));
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://localhost/mimir_control'
 });
@@ -152,7 +154,27 @@ app.get('/', async (_req, res) => {
 
   <section class="card" id="leads_card">
     <h2>Leads</h2>
-    <div class="muted" style="margin:-4px 0 10px 0">En enkel shell rundt <code>mimir.leads</code> (ingen ingestion ennå)</div>
+    <div class="muted" style="margin:-4px 0 10px 0">En enkel shell rundt <code>mimir.leads</code> + et lite skjema for å legge inn manuelt</div>
+
+    <form id="lead_form" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:end;margin:6px 0 12px 0">
+      <label class="muted" style="display:flex;flex-direction:column;gap:4px">Navn
+        <input id="lead_name" placeholder="Navn" style="background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:8px 10px;font:inherit"/>
+      </label>
+      <label class="muted" style="display:flex;flex-direction:column;gap:4px">E-post
+        <input id="lead_email" placeholder="epost@domene.no" style="background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:8px 10px;font:inherit"/>
+      </label>
+      <label class="muted" style="display:flex;flex-direction:column;gap:4px">Company
+        <input id="lead_company" placeholder="Company" style="background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:8px 10px;font:inherit"/>
+      </label>
+      <label class="muted" style="display:flex;flex-direction:column;gap:4px">Source
+        <input id="lead_source" placeholder="source" style="background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:8px 10px;font:inherit"/>
+      </label>
+      <div style="grid-column:1 / -1; display:flex; gap:8px; align-items:center">
+        <button class="btn" type="submit" id="lead_submit">Legg til lead</button>
+        <span class="muted" id="lead_form_msg" style="min-height:1em"></span>
+      </div>
+    </form>
+
     <div id="leads" class="muted">Laster…</div>
   </section>
 
@@ -340,6 +362,53 @@ app.get('/', async (_req, res) => {
         '</div>'
       );
     }).join('');
+  }
+
+  async function wireLeadForm(){
+    const form = document.getElementById('lead_form');
+    if (!form) return;
+
+    const msg = document.getElementById('lead_form_msg');
+    const btn = document.getElementById('lead_submit');
+
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (msg) msg.textContent = '';
+      if (btn) btn.disabled = true;
+
+      const payload = {
+        name: document.getElementById('lead_name')?.value || null,
+        email: document.getElementById('lead_email')?.value || null,
+        company: document.getElementById('lead_company')?.value || null,
+        source: document.getElementById('lead_source')?.value || null
+      };
+
+      try {
+        const r = await fetch('/api/leads', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          if (msg) msg.textContent = j?.error ? String(j.error) : ('HTTP ' + r.status);
+          return;
+        }
+
+        for (const id of ['lead_name','lead_email','lead_company','lead_source']) {
+          const el = document.getElementById(id);
+          if (el) el.value = '';
+        }
+        if (msg) msg.textContent = 'Lagret.';
+        loadLeads().catch(()=>{});
+    wireLeadForm().catch(()=>{});
+      } catch (e) {
+        if (msg) msg.textContent = String(e?.message || e);
+      } finally {
+        if (btn) btn.disabled = false;
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 2500);
+      }
+    };
   }
 
   async function loadRunKinds(){
@@ -602,6 +671,36 @@ app.get('/api/run/:id', async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
 
     res.json({ run: r.rows[0] });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/leads', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const name = req.body?.name ? String(req.body.name).trim() : null;
+    const email = req.body?.email ? String(req.body.email).trim() : null;
+    const company = req.body?.company ? String(req.body.company).trim() : null;
+    const source = req.body?.source ? String(req.body.source).trim() : null;
+
+    if (!name && !email && !company) {
+      return res.status(400).json({ error: 'Gi minst én av: name, email, company' });
+    }
+
+    // super-light email sanity check (avoid storing obvious junk)
+    if (email && (!email.includes('@') || email.length > 254)) {
+      return res.status(400).json({ error: 'Ugyldig email' });
+    }
+
+    const r = await client.query(
+      'insert into mimir.leads(source, name, email, company) values ($1,$2,$3,$4) returning id, created_at, source, name, email, company, status, notes',
+      [source, name, email, company]
+    );
+
+    res.status(201).json({ lead: r.rows[0] });
   } finally {
     client.release();
   }

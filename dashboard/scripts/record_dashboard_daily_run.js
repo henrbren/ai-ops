@@ -23,13 +23,13 @@ async function ensureSchema(client) {
 }
 
 const status = process.argv[2] || 'ok';
-const summary = process.argv[3] || 'dashboard_daily: add status filter to Runs list';
+const summary = process.argv[3] || 'dashboard_daily: add manual lead capture';
 
 const details = {
-  feature: process.argv[4] || 'runs_status_filter',
+  feature: process.argv[4] || 'leads_manual_add',
   repo: 'henrbren/ai-ops',
   component: 'dashboard',
-  notes: process.argv[5] || 'Adds a Runs status filter (ok/warn/fail) persisted in localStorage, and extends /api/runs to support status=.'
+  notes: process.argv[5] || 'Adds POST /api/leads + a small UI form to insert leads into mimir.leads.'
 };
 
 const main = async () => {
