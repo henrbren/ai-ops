@@ -401,7 +401,6 @@ app.get('/', async (_req, res) => {
         }
         if (msg) msg.textContent = 'Lagret.';
         loadLeads().catch(()=>{});
-    wireLeadForm().catch(()=>{});
       } catch (e) {
         if (msg) msg.textContent = String(e?.message || e);
       } finally {
