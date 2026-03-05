@@ -556,9 +556,37 @@ app.get('/', async (_req, res) => {
     loadRuns().catch(()=>{});
     loadLeads().catch(()=>{});
 
-    // Nudge-refresh github stats (cached ~60s server-side)
-    fetch('/api/github').catch(()=>{});
+    // Try to refresh GitHub stats (cached ~60s server-side). If gh isn't authenticated,
+    // show cached values + an error hint.
+    refreshGithub().catch(()=>{});
   }
+
+  async function refreshGithub(){
+    const r = await fetch('/api/github');
+    const j = await r.json().catch(() => ({}));
+
+    // j is either a row ({open_prs,...}) or {source:'error', cached:{...}}
+    const row = j?.source === 'error' ? (j?.cached || null) : j;
+
+    if (row) {
+      document.getElementById('gh_prs').textContent = String(row.open_prs ?? '—');
+      document.getElementById('gh_fail').textContent = String(row.prs_with_failing_checks ?? '—');
+      document.getElementById('gh_rel').textContent = String(row.release_queued_items ?? '—');
+    }
+
+    const meta = document.getElementById('gh_meta');
+    const fetched = row?.fetched_at ? new Date(row.fetched_at).toLocaleString('no-NO') : null;
+    const source = j?.source ? String(j.source) : null;
+    const err = j?.source === 'error' && j?.error ? String(j.error) : null;
+
+    const parts = [];
+    if (fetched) parts.push('Sist oppdatert: ' + fetched);
+    if (source) parts.push('kilde: ' + source);
+    if (err) parts.push('error: ' + err);
+
+    if (meta) meta.textContent = parts.join(' · ');
+  }
+
   load().catch(()=>{});
   setInterval(load, 5000);
 </script>
