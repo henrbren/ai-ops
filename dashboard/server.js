@@ -57,6 +57,18 @@ async function ensureSchema(client) {
     )
   `);
   await client.query(`create index if not exists leads_created_at_idx on mimir.leads(created_at desc)`);
+
+  // Single shared note pad (tiny persisted scratch space for the dashboard)
+  await client.query(`
+    create table if not exists mimir.dashboard_notes (
+      id int primary key default 1,
+      updated_at timestamptz not null default now(),
+      content text not null default ''
+    )
+  `);
+
+  // Ensure row 1 exists
+  await client.query(`insert into mimir.dashboard_notes(id) values (1) on conflict (id) do nothing`);
 }
 
 
@@ -176,6 +188,16 @@ app.get('/', async (_req, res) => {
     </form>
 
     <div id="leads" class="muted">Laster…</div>
+  </section>
+
+  <section class="card" id="notes_card">
+    <h2>Notes</h2>
+    <div class="muted" style="margin:-4px 0 10px 0">En liten, persistent notisblokk lagret i <code>mimir.dashboard_notes</code></div>
+    <textarea id="notes_text" rows="6" placeholder="Skriv noe du vil huske (lagres i DB)…" style="width:100%;resize:vertical;background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:10px;font:inherit"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+      <button class="btn" id="notes_save" type="button">Lagre</button>
+      <span class="muted" id="notes_meta" style="min-height:1em">—</span>
+    </div>
   </section>
 
   <section class="card">
@@ -410,6 +432,65 @@ app.get('/', async (_req, res) => {
     };
   }
 
+
+
+  async function loadNotes(){
+    const r = await fetch('/api/notes');
+    const j = await r.json().catch(() => ({}));
+
+    const ta = document.getElementById('notes_text');
+    const meta = document.getElementById('notes_meta');
+
+    if (ta && typeof j?.content === 'string') {
+      // Only set if empty to avoid clobbering local edits during refresh
+      if (!ta.value) ta.value = j.content;
+    }
+
+    const updated = j?.updated_at ? new Date(j.updated_at).toLocaleString('no-NO') : null;
+    if (meta) meta.textContent = updated ? ('Sist lagret: ' + updated) : '—';
+  }
+
+  async function saveNotes(content){
+    const r = await fetch('/api/notes', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j?.error ? String(j.error) : ('HTTP ' + r.status));
+    return j;
+  }
+
+  async function wireNotes(){
+    const ta = document.getElementById('notes_text');
+    const btn = document.getElementById('notes_save');
+    const meta = document.getElementById('notes_meta');
+    if (!ta || !btn) return;
+
+    let t = null;
+
+    async function doSave(){
+      if (btn) btn.disabled = true;
+      try {
+        const j = await saveNotes(ta.value || '');
+        const updated = j?.updated_at ? new Date(j.updated_at).toLocaleString('no-NO') : null;
+        if (meta) meta.textContent = updated ? ('Sist lagret: ' + updated) : 'Lagret.';
+      } catch (e) {
+        if (meta) meta.textContent = 'Kunne ikke lagre: ' + String(e?.message || e);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    btn.onclick = () => { doSave().catch(()=>{}); };
+
+    // Debounced autosave while typing
+    ta.addEventListener('input', () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => { doSave().catch(()=>{}); }, 900);
+    });
+  }
+
   async function loadRunKinds(){
     const sel = document.getElementById('runs_kind');
     const selStatus = document.getElementById('runs_status');
@@ -555,6 +636,8 @@ app.get('/', async (_req, res) => {
     loadRunKinds().catch(()=>{});
     loadRuns().catch(()=>{});
     loadLeads().catch(()=>{});
+    loadNotes().catch(()=>{});
+    wireNotes().catch(()=>{});
 
     // Try to refresh GitHub stats (cached ~60s server-side). If gh isn't authenticated,
     // show cached values + an error hint.
@@ -750,6 +833,40 @@ app.get('/api/leads', async (req, res) => {
     );
 
     res.json({ leads: r.rows });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/notes', async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+    const r = await client.query(`select id, updated_at, content from mimir.dashboard_notes where id=1`);
+    const row = r.rows[0] || { id: 1, updated_at: null, content: '' };
+    res.json(row);
+  } finally {
+    client.release();
+  }
+});
+
+app.put('/api/notes', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+    const contentRaw = req.body?.content;
+    const content = contentRaw == null ? '' : String(contentRaw);
+
+    if (content.length > 20000) {
+      return res.status(400).json({ error: 'For lang note (max 20k tegn)' });
+    }
+
+    const r = await client.query(
+      `update mimir.dashboard_notes set content=$1, updated_at=now() where id=1 returning id, updated_at, content`,
+      [content]
+    );
+
+    res.json(r.rows[0]);
   } finally {
     client.release();
   }
