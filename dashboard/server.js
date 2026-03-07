@@ -229,6 +229,36 @@ app.get('/', async (_req, res) => {
   </div>
 </div>
 
+<div class="modal" id="lead_modal" aria-hidden="true">
+  <div class="box">
+    <div class="top">
+      <div>
+        <div style="font-weight:600" id="lead_modal_title">Lead</div>
+        <div class="muted" id="lead_modal_meta">—</div>
+      </div>
+      <button class="btn" id="lead_modal_close" type="button">Lukk</button>
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px">
+      <label class="muted" style="display:flex;flex-direction:column;gap:4px;min-width:180px">Status
+        <select id="lead_modal_status" aria-label="Lead status">
+          <option value="new">new</option>
+          <option value="contacted">contacted</option>
+          <option value="qualified">qualified</option>
+          <option value="won">won</option>
+          <option value="lost">lost</option>
+        </select>
+      </label>
+      <div class="muted" id="lead_modal_msg" style="flex:1; min-height:1em">&nbsp;</div>
+      <button class="btn" id="lead_modal_save" type="button">Lagre</button>
+    </div>
+
+    <label class="muted" style="display:flex;flex-direction:column;gap:6px">Notes
+      <textarea id="lead_modal_notes" rows="8" placeholder="Notater…" style="width:100%;resize:vertical;background:#0f1522;color:var(--fg);border:1px solid #243041;border-radius:10px;padding:10px;font:inherit"></textarea>
+    </label>
+  </div>
+</div>
+
 <script>
   document.getElementById('now').textContent = new Date().toLocaleString('no-NO');
   function esc(s){
@@ -298,8 +328,95 @@ app.get('/', async (_req, res) => {
     modal.setAttribute('aria-hidden','true');
   }
 
+  // Leads modal (edit status + notes)
+  function openLeadModal(lead){
+    const modal = document.getElementById('lead_modal');
+    if (!modal) return;
+
+    const title = document.getElementById('lead_modal_title');
+    const meta = document.getElementById('lead_modal_meta');
+    const status = document.getElementById('lead_modal_status');
+    const notes = document.getElementById('lead_modal_notes');
+    const msg = document.getElementById('lead_modal_msg');
+    const save = document.getElementById('lead_modal_save');
+
+    const name = lead?.name ? String(lead.name) : '(navn mangler)';
+    title.textContent = name + (lead?.id ? (' · lead #' + lead.id) : '');
+
+    const when = lead?.created_at ? new Date(lead.created_at).toLocaleString('no-NO') : null;
+    const line2 = [lead?.company, lead?.email, lead?.source].filter(Boolean).join(' · ');
+    meta.textContent = [when, line2].filter(Boolean).join(' · ') || '—';
+
+    if (status) status.value = String(lead?.status || 'new');
+    if (notes) notes.value = String(lead?.notes || '');
+    if (msg) msg.textContent = '';
+
+    // store active id on modal
+    modal.dataset.leadId = String(lead?.id || '');
+    if (save) save.disabled = false;
+
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden','false');
+  }
+
+  function closeLeadModal(){
+    const modal = document.getElementById('lead_modal');
+    if (!modal) return;
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden','true');
+    modal.dataset.leadId = '';
+  }
+
+  async function openLeadModalById(id){
+    const rr = await fetch('/api/lead/' + encodeURIComponent(String(id)));
+    const jj = await rr.json().catch(() => ({}));
+    if (jj?.lead) openLeadModal(jj.lead);
+  }
+
+  async function saveLeadModal(){
+    const modal = document.getElementById('lead_modal');
+    if (!modal) return;
+
+    const id = modal.dataset.leadId;
+    if (!id) return;
+
+    const status = document.getElementById('lead_modal_status');
+    const notes = document.getElementById('lead_modal_notes');
+    const msg = document.getElementById('lead_modal_msg');
+    const save = document.getElementById('lead_modal_save');
+
+    if (msg) msg.textContent = '';
+    if (save) save.disabled = true;
+
+    try {
+      const payload = {
+        status: status ? status.value : null,
+        notes: notes ? notes.value : ''
+      };
+
+      const r = await fetch('/api/lead/' + encodeURIComponent(String(id)), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error ? String(j.error) : ('HTTP ' + r.status));
+
+      if (msg) msg.textContent = 'Lagret.';
+      loadLeads().catch(()=>{});
+      setTimeout(() => { if (msg) msg.textContent = ''; }, 1500);
+    } catch (e) {
+      if (msg) msg.textContent = 'Kunne ikke lagre: ' + String(e?.message || e);
+    } finally {
+      if (save) save.disabled = false;
+    }
+  }
+
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeRunModal();
+    if (e.key === 'Escape') {
+      closeRunModal();
+      closeLeadModal();
+    }
   });
 
   async function loadRuns(){
@@ -375,7 +492,7 @@ app.get('/', async (_req, res) => {
       const line2 = [l.company, l.email, l.source].filter(Boolean).join(' · ');
       const sub = line2 ? '<div class="muted">' + esc(line2) + '</div>' : '';
       return (
-        '<div class="run">' +
+        '<div class="run clickable" data-lead-id="' + esc(l.id) + '">' +
           '<div class="left">' +
             '<div>' + (l.name ? esc(l.name) : '<span class="muted">(navn mangler)</span>') + ' · <span class="muted">' + esc(when) + '</span></div>' +
             sub +
@@ -384,6 +501,14 @@ app.get('/', async (_req, res) => {
         '</div>'
       );
     }).join('');
+
+    for (const row of el.querySelectorAll('[data-lead-id]')) {
+      row.addEventListener('click', async () => {
+        const id = row.getAttribute('data-lead-id');
+        if (!id) return;
+        openLeadModalById(id);
+      });
+    }
   }
 
   async function wireLeadForm(){
@@ -541,6 +666,18 @@ app.get('/', async (_req, res) => {
     });
   }
 
+  const leadModal = document.getElementById('lead_modal');
+  const leadModalClose = document.getElementById('lead_modal_close');
+  const leadModalSave = document.getElementById('lead_modal_save');
+
+  if (leadModalClose) leadModalClose.onclick = () => closeLeadModal();
+  if (leadModalSave) leadModalSave.onclick = () => saveLeadModal().catch(()=>{});
+  if (leadModal) {
+    leadModal.addEventListener('click', (e) => {
+      if (e.target === leadModal) closeLeadModal();
+    });
+  }
+
   async function load(){
 
     const r = await fetch('/api/status');
@@ -636,6 +773,7 @@ app.get('/', async (_req, res) => {
     loadRunKinds().catch(()=>{});
     loadRuns().catch(()=>{});
     loadLeads().catch(()=>{});
+    wireLeadForm().catch(()=>{});
     loadNotes().catch(()=>{});
     wireNotes().catch(()=>{});
 
@@ -833,6 +971,82 @@ app.get('/api/leads', async (req, res) => {
     );
 
     res.json({ leads: r.rows });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/lead/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const idRaw = String(req.params.id || '');
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+    const r = await client.query(
+      `select id, created_at, source, name, email, company, status, notes
+       from mimir.leads
+       where id=$1`,
+      [id]
+    );
+
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+
+    res.json({ lead: r.rows[0] });
+  } finally {
+    client.release();
+  }
+});
+
+app.patch('/api/lead/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const idRaw = String(req.params.id || '');
+    const id = Number(idRaw);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+    const statusRaw = req.body?.status != null ? String(req.body.status).trim().toLowerCase() : null;
+    const notesRaw = req.body?.notes != null ? String(req.body.notes) : null;
+
+    const allowedStatus = new Set(['new', 'contacted', 'qualified', 'won', 'lost']);
+    const status = statusRaw && allowedStatus.has(statusRaw) ? statusRaw : null;
+
+    if (notesRaw != null && notesRaw.length > 20_000) {
+      return res.status(400).json({ error: 'For lang notes (max 20k tegn)' });
+    }
+
+    if (status == null && notesRaw == null) {
+      return res.status(400).json({ error: 'Gi minst én av: status, notes' });
+    }
+
+    const fields = [];
+    const values = [];
+
+    if (status != null) {
+      values.push(status);
+      fields.push(`status=$${values.length}`);
+    }
+
+    if (notesRaw != null) {
+      values.push(notesRaw);
+      fields.push(`notes=$${values.length}`);
+    }
+
+    values.push(id);
+
+    const r = await client.query(
+      `update mimir.leads set ${fields.join(', ')} where id=$${values.length}
+       returning id, created_at, source, name, email, company, status, notes`,
+      values
+    );
+
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+
+    res.json({ lead: r.rows[0] });
   } finally {
     client.release();
   }
