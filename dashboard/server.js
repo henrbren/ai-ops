@@ -67,6 +67,15 @@ async function ensureSchema(client) {
     )
   `);
 
+  // Optional acknowledgement for the current incident banner (per morning_routine run)
+  await client.query(`
+    create table if not exists mimir.dashboard_incident_ack (
+      run_id bigint primary key references mimir.runs(id) on delete cascade,
+      acked_at timestamptz not null default now(),
+      note text
+    )
+  `);
+
   // Ensure row 1 exists
   await client.query(`insert into mimir.dashboard_notes(id) values (1) on conflict (id) do nothing`);
 }
@@ -121,7 +130,13 @@ app.get('/', async (_req, res) => {
 <main>
   <section class="banner" id="incident" style="display:none">
     <h2>Incident</h2>
-    <div class="row"><div><strong>Morning routine feilet</strong></div><div class="badge fail">fail</div></div>
+    <div class="row">
+      <div><strong>Morning routine feilet</strong></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="incident_ack" type="button" title="Skjul denne incidenten til neste morning_routine-run">Skjul</button>
+        <div class="badge fail">fail</div>
+      </div>
+    </div>
     <div class="muted" id="incident_text" style="margin-top:6px">—</div>
     <div class="muted" style="margin-top:8px"><a href="/api/runs?kind=morning_routine&limit=20" target="_blank">Se run-logg</a></div>
   </section>
@@ -732,17 +747,47 @@ app.get('/', async (_req, res) => {
       }
     }
 
-    // Incident banner if latest morning routine failed
+    // Incident banner if latest morning routine failed (can be acknowledged per-run)
     const incidentEl = document.getElementById('incident');
     const incidentTextEl = document.getElementById('incident_text');
+    const incidentAckBtn = document.getElementById('incident_ack');
+
+    const mrRunId = j.morningRoutineRun?.id;
     const mrStatus = String(j.morningRoutineRun?.status || '').toLowerCase();
-    if (mrStatus === 'fail') {
+    const ackedAt = j.morningRoutineAckedAt ? new Date(j.morningRoutineAckedAt) : null;
+
+    if (mrStatus === 'fail' && !ackedAt) {
       const when = j.morningRoutineRun?.started_at ? new Date(j.morningRoutineRun.started_at).toLocaleString('no-NO') : '';
       const summary = j.morningRoutineRun?.summary ? j.morningRoutineRun.summary : '(ingen summary)';
       incidentTextEl.textContent = (when ? when + ' · ' : '') + summary;
       incidentEl.style.display = '';
+
+      if (incidentAckBtn) {
+        incidentAckBtn.disabled = false;
+        incidentAckBtn.onclick = async () => {
+          if (!mrRunId) return;
+          incidentAckBtn.disabled = true;
+          try {
+            const r = await fetch('/api/incident/ack', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ run_id: mrRunId })
+            });
+            const jj = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(jj?.error ? String(jj.error) : ('HTTP ' + r.status));
+            incidentEl.style.display = 'none';
+          } catch (e) {
+            incidentAckBtn.disabled = false;
+            alert('Kunne ikke skjule incident: ' + String(e?.message || e));
+          }
+        };
+      }
     } else {
       incidentEl.style.display = 'none';
+      if (incidentAckBtn) {
+        incidentAckBtn.onclick = null;
+        incidentAckBtn.disabled = true;
+      }
     }
 
     const drEl = document.getElementById('dr');
@@ -830,12 +875,23 @@ app.get('/api/status', async (_req, res) => {
       `select fetched_at, open_prs, prs_with_failing_checks, release_queued_items from mimir.dashboard_github_stats order by fetched_at desc limit 1`
     );
 
+    const mrRun = mr.rows[0] || null;
+    let mrAckedAt = null;
+    if (mrRun?.id) {
+      const ack = await client.query(
+        `select acked_at from mimir.dashboard_incident_ack where run_id=$1`,
+        [mrRun.id]
+      );
+      mrAckedAt = ack.rows[0]?.acked_at || null;
+    }
+
     const fmt = (row) => row ? `${new Date(row.started_at).toLocaleString('no-NO')} · ${row.status}` : null;
 
     res.json({
-      morningRoutine: mr.rows[0] ? fmt(mr.rows[0]) : null,
+      morningRoutine: mrRun ? fmt(mrRun) : null,
       dashboardDaily: dr.rows[0] ? fmt(dr.rows[0]) : null,
-      morningRoutineRun: mr.rows[0] || null,
+      morningRoutineRun: mrRun,
+      morningRoutineAckedAt: mrAckedAt,
       dashboardDailyRun: dr.rows[0] || null,
       github: gh.rows[0] || null
     });
@@ -919,6 +975,37 @@ app.get('/api/run/:id', async (req, res) => {
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
 
     res.json({ run: r.rows[0] });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/incident/ack', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureSchema(client);
+
+    const runIdRaw = req.body?.run_id;
+    const runId = Number(runIdRaw);
+    if (!Number.isFinite(runId)) return res.status(400).json({ error: 'invalid run_id' });
+
+    // Only allow acking morning_routine runs (keeps the table honest)
+    const r = await client.query(
+      `select id, kind from mimir.runs where id=$1`,
+      [runId]
+    );
+    const run = r.rows[0] || null;
+    if (!run) return res.status(404).json({ error: 'run not found' });
+    if (String(run.kind) !== 'morning_routine') return res.status(400).json({ error: 'can only ack morning_routine runs' });
+
+    await client.query(
+      `insert into mimir.dashboard_incident_ack(run_id, acked_at)
+       values ($1, now())
+       on conflict (run_id) do update set acked_at=excluded.acked_at`,
+      [runId]
+    );
+
+    res.json({ ok: true });
   } finally {
     client.release();
   }
