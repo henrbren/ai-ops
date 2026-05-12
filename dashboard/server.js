@@ -698,10 +698,12 @@ app.get('/', async (_req, res) => {
     const r = await fetch('/api/status');
     const j = await r.json();
     const mrEl = document.getElementById('mr');
+    const drEl = document.getElementById('dr');
     const mrSummaryEl = document.getElementById('mr_summary');
     const drSummaryEl = document.getElementById('dr_summary');
 
-    mrEl.textContent = j.morningRoutine || '—';
+    if (mrEl) mrEl.textContent = j.morningRoutine || '—';
+    if (drEl) drEl.textContent = j.dashboardDaily || '—';
 
     // Summary + duration (if finished_at present)
     const mrRun = j.morningRoutineRun;
@@ -734,6 +736,24 @@ app.get('/', async (_req, res) => {
     }
 
     const drRun = j.dashboardDailyRun;
+
+    // Make dashboard-daily status clickable to open the full run details
+    if (drEl) {
+      if (drRun?.id) {
+        drEl.style.cursor = 'pointer';
+        drEl.title = 'Klikk for detaljer';
+        drEl.onclick = async () => {
+          const rr = await fetch('/api/run/' + encodeURIComponent(drRun.id));
+          const jj = await rr.json().catch(() => ({}));
+          if (jj?.run) openRunModal(jj.run);
+        };
+      } else {
+        drEl.style.cursor = '';
+        drEl.title = '';
+        drEl.onclick = null;
+      }
+    }
+
     const drSummary = drRun?.summary ? String(drRun.summary) : '';
     const drStarted = drRun?.started_at ? new Date(drRun.started_at) : null;
     const drFinished = drRun?.finished_at ? new Date(drRun.finished_at) : null;
